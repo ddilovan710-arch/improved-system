@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <title>💰 نظام محاسبة المتجر</title>
+
+  <!-- ZXing -->
+  <script src="https://unpkg.com/@zxing/library@0.20.0"></script>
+  <!-- localForage -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
+
+  <style>
+    body { font-family:"Cairo",sans-serif; margin:0; background:#f5f6fa; direction:rtl; font-size:20px; }
+    header { background:#2c3e50; color:white; padding:20px; text-align:center; font-size:26px; }
+    nav { display:flex; justify-content:center; gap:20px; background:#34495e; padding:12px; flex-wrap:wrap; }
+    nav button { background:#1abc9c; border:none; color:white; padding:12px 20px; border-radius:8px; cursor:pointer; font-size:18px; }
+    nav button:hover { background:#16a085; }
+    section { display:none; max-width:900px; margin:20px auto; background:white; padding:20px; border-radius:8px; box-shadow:0 4px 15px rgba(0,0,0,0.15); font-size:18px; }
+    section.active { display:block; }
+    label { display:block; margin-top:10px; font-weight:bold; }
+    input,button { margin:6px 0; padding:10px; border-radius:6px; border:1px solid #bbb; font-size:16px; }
+    button.action { background:#3498db; color:white; border:none; font-weight:bold; }
+    button.action:hover { background:#2980b9; }
+    table { width:100%; border-collapse:collapse; margin-top:15px; font-size:16px; }
+    th,td { border:1px solid #ddd; padding:6px; text-align:center; }
+    th { background:#ecf0f1; }
+    .btn-sm { padding:6px 10px; border-radius:6px; font-size:14px; cursor:pointer; }
+    #scanner { display:none; margin:15px auto; width:320px; position:relative; border-radius:8px; overflow:hidden; background:#000; }
+    video { width:100%; height:auto; }
+    #closeScannerBtn { position:absolute; top:8px; left:8px; background:#e74c3c; color:#fff; border:none; border-radius:6px; padding:6px 10px; cursor:pointer; font-size:14px; }
+    #lastScan { text-align:center; font-size:16px; margin-top:8px; font-weight:bold; color:#2c3e50; }
+  </style>
+</head>
+<body>
+  <header>💰 نظام محاسبة المتجر</header>
+
+  <nav>
+    <button onclick="showPage('sell')">💵 البيع</button>
+    <button onclick="showPage('products')">🛒 المنتجات</button>
+    <button onclick="showPage('history')">📊 السجل</button>
+    <button onclick="showPage('check')">🔍 معرفة السعر</button>
+  </nav>
+
+  <!-- البيع -->
+  <section id="sell" class="active">
+    <h2>💵 بيع منتج</h2>
+    <label>📦 الباركود</label>
+    <input id="sellBarcode" placeholder="اكتب أو امسح الباركود">
+    <button class="btn-sm" onclick="startScanner('sell')">📷 مسح بالكاميرا</button>
+    <label>🔢 الكمية</label><input id="sellQty" type="number" value="1">
+    <label>💲 سعر البيع</label><input id="sellPrice" type="number">
+    <button class="action" onclick="processTransaction()">✅ تنفيذ البيع</button>
+  </section>
+
+  <!-- المنتجات -->
+  <section id="products">
+    <h2>🛒 المنتجات</h2>
+    <label>📦 الباركود</label><input id="pbarcode">
+    <button class="btn-sm" onclick="startScanner('product')">📷 مسح</button>
+    <label>💲 سعر البيع</label><input id="psell" type="number">
+    <label>💲 سعر التكلفة</label><input id="pcost" type="number">
+    <label>🔢 الكمية</label><input id="pstock" type="number">
+    <button class="action" onclick="addOrUpdateProduct()">➕ إضافة / تحديث</button>
+    <table id="productsTable">
+      <thead><tr><th>باركود</th><th>سعر البيع</th><th>التكلفة</th><th>المخزون</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- السجل -->
+  <section id="history">
+    <h2>📊 السجل</h2>
+    <table id="historyTable">
+      <thead><tr><th>النوع</th><th>الباركود</th><th>كمية</th><th>السعر</th><th>الإجمالي</th><th>التاريخ</th><th>إجراءات</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- معرفة السعر -->
+  <section id="check">
+    <h2>🔍 معرفة السعر</h2>
+    <input id="checkBarcode" placeholder="اكتب أو امسح الباركود">
+    <button class="btn-sm" onclick="startScanner('check')">📷 مسح</button>
+    <div id="checkResult" style="margin-top:10px;font-weight:bold;"></div>
+  </section>
+
+  <!-- الكاميرا -->
+  <div id="scanner">
+    <button id="closeScannerBtn" onclick="closeScanner()">✖</button>
+    <video id="preview" autoplay playsinline></video>
+  </div>
+  <div id="lastScan"></div>
+  <audio id="beep" src="https://actions.google.com/sounds/v1/alarms/beep_short.ogg"></audio>
+
+<script>
+localforage.config({ name:'shopapp' });
+const productsStore = localforage.createInstance({ name:'shopapp', storeName:'products' });
+const txStore       = localforage.createInstance({ name:'shopapp', storeName:'transactions' });
+
+let products = [];
+let transactions = [];
+let codeReader = new ZXing.BrowserMultiFormatReader();
+let currentStream, scannerMode=null;
+
+const newId = ()=> 'id_'+Math.random().toString(36).slice(2)+'_'+Date.now();
+const nowISO = ()=> new Date().toISOString();
+
+async function loadAll(){
+  products=[]; transactions=[];
+  await productsStore.iterate(v=>products.push(v));
+  await txStore.iterate(v=>transactions.push(v));
+  transactions.sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||""));
+  loadProducts(); loadHistory();
+}
+function showPage(id){ document.querySelectorAll("section").forEach(s=>s.classList.remove("active")); document.getElementById(id).classList.add("active"); }
+
+async function addOrUpdateProduct(){
+  const b=document.getElementById("pbarcode").value.trim(); if(!b) return;
+  const p={ barcode:b, sellPrice:parseFloat(psell.value)||0, cost:parseFloat(pcost.value)||0, stock:parseInt(pstock.value)||0 };
+  await productsStore.setItem(b,p);
+  pbarcode.value=psell.value=pcost.value=pstock.value="";
+  await loadAll();
+}
+function loadProducts(){
+  const tbody=document.querySelector("#productsTable tbody"); tbody.innerHTML="";
+  products.forEach(p=>{
+    tbody.innerHTML+=`<tr><td>${p.barcode}</td><td>${p.sellPrice}</td><td>${p.cost}</td><td>${p.stock}</td></tr>`;
+  });
+}
+
+async function processTransaction(){
+  const b=sellBarcode.value.trim(), q=parseInt(sellQty.value)||0, pr=parseFloat(sellPrice.value)||0;
+  const p=await productsStore.getItem(b); if(!p) return alert("❌ المنتج غير موجود");
+  if(p.stock<q) return alert("❌ مخزون غير كافي");
+  p.stock-=q; await productsStore.setItem(b,p);
+  const tx={id:newId(),type:"بيع",barcode:b,qty:q,price:pr,total:pr*q,cost:(p.cost||0)*q,createdAt:nowISO()};
+  await txStore.setItem(tx.id,tx);
+  sellBarcode.value=""; sellQty.value=1; sellPrice.value="";
+  await loadAll(); alert("✔ تمت العملية");
+}
+function loadHistory(){
+  const tbody=document.querySelector("#historyTable tbody"); tbody.innerHTML="";
+  transactions.forEach(t=>{
+    const d=t.createdAt?new Date(t.createdAt).toLocaleString():"";
+    tbody.innerHTML+=`<tr id="tx_${t.id}">
+      <td>${t.type}</td><td>${t.barcode}</td><td>${t.qty}</td>
+      <td>${t.price}</td><td>${t.total}</td><td>${d}</td>
+      <td>
+        <button class="btn-sm" onclick="editTx('${t.id}')">✏️</button>
+        <button class="btn-sm" style="background:#e74c3c;color:#fff" onclick="deleteTx('${t.id}')">🗑</button>
+      </td></tr>`;
+  });
+}
+function editTx(id){
+  const t=transactions.find(x=>x.id===id); if(!t) return;
+  const tr=document.getElementById("tx_"+id);
+  tr.innerHTML=`<td>${t.type}</td>
+    <td><input id="e_barcode_${id}" value="${t.barcode}"></td>
+    <td><input id="e_qty_${id}" type="number" value="${t.qty}"></td>
+    <td><input id="e_price_${id}" type="number" value="${t.price}"></td>
+    <td>${t.total}</td><td>${new Date(t.createdAt).toLocaleString()}</td>
+    <td><button onclick="saveTx('${id}')">💾</button></td>`;
+}
+async function saveTx(id){
+  const t=await txStore.getItem(id); if(!t) return;
+  const newB=document.getElementById("e_barcode_"+id).value.trim();
+  const newQ=parseInt(document.getElementById("e_qty_"+id).value)||0;
+  const newP=parseFloat(document.getElementById("e_price_"+id).value)||0;
+  const newProd=await productsStore.getItem(newB); if(!newProd) return alert("❌ المنتج غير موجود");
+  newProd.stock+=t.qty; // رجع المخزون القديم
+  if(newProd.stock<newQ) return alert("❌ مخزون غير كافي");
+  newProd.stock=newProd.stock-newQ; await productsStore.setItem(newB,newProd);
+  const nt={...t,barcode:newB,qty:newQ,price:newP,total:newQ*newP,cost:(newProd.cost||0)*newQ};
+  await txStore.setItem(id,nt); await loadAll();
+}
+async function deleteTx(id){
+  const t=await txStore.getItem(id); if(!t) return;
+  if(confirm("حذف العملية؟")){ const p=await productsStore.getItem(t.barcode);
+    if(p){p.stock+=t.qty; await productsStore.setItem(t.barcode,p);}
+    await txStore.removeItem(id); await loadAll();
+  }
+}
+
+function checkPrice(b){
+  const p=products.find(x=>x.barcode===b);
+  checkResult.textContent=p?`💲 السعر: ${p.sellPrice} | 📦 المخزون: ${p.stock}`:"❌ المنتج غير موجود";
+}
+
+async function startScanner(mode){
+  scannerMode=mode;
+  document.getElementById("scanner").style.display="block";
+  try {
+    const constraints={video:{facingMode:"environment"}};
+    currentStream=await navigator.mediaDevices.getUserMedia(constraints);
+    document.getElementById("preview").srcObject=currentStream;
+    codeReader.decodeFromVideoDevice(null,"preview",(res,err)=>{
+      if(res){ handleScan(res.text); }
+    });
+  } catch(e){ alert("❌ لم يتم فتح الكاميرا"); }
+}
+function handleScan(code){
+  beep.play(); lastScan.textContent="✅ "+code;
+  if(scannerMode==="sell") sellBarcode.value=code;
+  if(scannerMode==="product") pbarcode.value=code;
+  if(scannerMode==="check"){ checkBarcode.value=code; checkPrice(code); }
+  closeScanner();
+}
+function closeScanner(){
+  codeReader.reset();
+  if(currentStream){ currentStream.getTracks().forEach(t=>t.stop()); }
+  document.getElementById("scanner").style.display="none";
+}
+
+loadAll();
+</script>
+</body>
+</html>
