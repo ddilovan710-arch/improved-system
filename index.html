@@ -47,10 +47,16 @@ th { background:#e3f2fd; }
   <input id="sellBarcode">
   <button class="action" onclick="startScanner('sell')">📷 مسح</button>
   <div id="scanner"><video id="preview" autoplay playsinline></video></div>
+
   <label>📛 اسم المنتج</label>
   <input id="sellName" readonly>
+
+  <label>🔢 الكمية</label>
+  <input id="sellQty" type="number" value="1">
+
   <label>💲 سعر البيع</label>
   <input id="sellPrice" type="number">
+
   <button class="action" onclick="processSale()">✅ تنفيذ البيع</button>
 </section>
 
@@ -61,20 +67,27 @@ th { background:#e3f2fd; }
   <input id="pbarcode">
   <button class="action" onclick="startScanner('product')">📷 مسح</button>
   <div id="scanner"><video id="preview" autoplay playsinline></video></div>
+
   <label>📛 اسم المنتج</label>
   <input id="pname">
+
   <label>💲 سعر التكلفة</label>
   <input id="pcost" type="number">
+
   <label>💲 سعر المبيع</label>
   <input id="psell" type="number">
+
   <label>🔢 الكمية</label>
   <input id="pstock" type="number">
+
   <button class="action" onclick="addProduct()">➕ إضافة / تحديث</button>
+
   <table id="productsTable">
     <thead><tr><th>باركود</th><th>اسم</th><th>تكلفة</th><th>مبيع</th><th>كمية</th></tr></thead>
     <tbody></tbody>
   </table>
   <p>📊 إجمالي الكمية: <span id="totalStock">0</span></p>
+
   <button class="btn-exp" onclick="exportProducts('json')">⬇️ تصدير JSON</button>
   <button class="btn-exp" onclick="exportProducts('excel')">⬇️ تصدير Excel</button>
   <input type="file" id="importProductsFile" onchange="importProducts(event)" hidden>
@@ -194,7 +207,7 @@ function importProducts(e){
         await prodStore.setItem(p.barcode,{barcode:p.barcode,name:p.name||"",cost:+p.cost||0,sell:+p.sell||0,stock:+p.stock||0});
       }
     }
-    loadProducts(); alert("✔ تم الاستيراد");
+    loadProducts(); alert("✔ تم استيراد كل المنتجات");
   };
   if(file.name.endsWith(".json")) reader.readAsText(file);
   else reader.readAsBinaryString(file);
@@ -206,14 +219,19 @@ async function loadProductName(barcode){
   sellName.value=p? p.name : "❌ غير موجود";
 }
 async function processSale(){
-  let b=sellBarcode.value.trim(), pr=+sellPrice.value||0;
+  let b=sellBarcode.value.trim(),
+      q=+sellQty.value||1,
+      pr=+sellPrice.value||0;
   if(!b) return alert("❌ أدخل باركود");
   let p=await prodStore.getItem(b);
   if(!p) return alert("❌ المنتج غير موجود");
-  let s={id:Date.now(),barcode:b,name:p.name,qty:1,price:pr,total:pr,date:new Date().toLocaleString()};
+  if(p.stock<q) return alert("❌ مخزون غير كافي");
+
+  p.stock-=q; await prodStore.setItem(b,p);
+  let s={id:Date.now(),barcode:b,name:p.name,qty:q,price:pr,total:q*pr,date:new Date().toLocaleString()};
   await saleStore.setItem(s.id,s);
-  alert("✔ تمت عملية البيع للمنتج: "+p.name);
-  sellBarcode.value=sellName.value=sellPrice.value="";
+  alert("✔ تمت عملية البيع: "+p.name);
+  sellBarcode.value=sellName.value=sellPrice.value=""; sellQty.value=1;
   loadSales();
 }
 
@@ -285,13 +303,10 @@ function importSales(e){
     }
     for(const s of data){
       if(s.id){
-        await saleStore.setItem(s.id,{
-          id:s.id, barcode:s.barcode, name:s.name,
-          qty:+s.qty||1, price:+s.price||0, total:+s.total||0, date:s.date||new Date().toLocaleString()
-        });
+        await saleStore.setItem(s.id,{id:s.id,barcode:s.barcode,name:s.name||"",qty:+s.qty||1,price:+s.price||0,total:+s.total||0,date:s.date||new Date().toLocaleString()});
       }
     }
-    loadSales(); alert("✔ تم الاستيراد");
+    loadSales(); alert("✔ تم استيراد كل السجل");
   };
   if(file.name.endsWith(".json")) reader.readAsText(file);
   else reader.readAsBinaryString(file);
